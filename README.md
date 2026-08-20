@@ -2,6 +2,8 @@
 
 A comprehensive suite of custom nodes for ComfyUI designed to seamlessly connect your workflows to local LLM models (Language Models), either via LM Studio's API or directly within ComfyUI using local GGUF models.
 
+![LM_Connect Nodes](images/nodes.png)
+
 ## Key Features
 
 - **Multi-Backend Support**: Connect to external LLM servers like LM Studio via REST API, or run `.gguf` models directly inside the ComfyUI process using `llama-cpp-python`.
