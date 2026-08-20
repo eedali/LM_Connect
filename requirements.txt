@@ -1,0 +1,7 @@
+requests
+Pillow
+numpy
+# GPU hızlandırma için CUDA'ya özel wheel gerekir, örn: 
+# pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 
+# (CUDA sürümünü kendi sisteminize göre "cu121", "cu118" vb. değiştirin)
+llama-cpp-python
