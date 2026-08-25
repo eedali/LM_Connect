@@ -217,6 +217,300 @@ class LMConnectH3PromptFullReference:
 
         return (warning + response,)
 
+DEFAULT_SWAP_BEHAVIOR = SYSTEM_PROMPTS.get("h3_swap_behavior", "")
+
+class LMConnectH3PersonSwap:
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = {
+            "required": {
+                "composition_image": ("IMAGE",),
+                "user_brief": ("STRING", {"multiline": True}),
+                "reference_descriptions": ("STRING", {"multiline": True}),
+            },
+            "optional": {
+                # --- Reference Person Slot 1 ---
+                "ref_image_1": ("IMAGE",),
+                "replaces_who_1": ("STRING", {"default": ""}),
+                # --- Reference Person Slot 2 ---
+                "ref_image_2": ("IMAGE",),
+                "replaces_who_2": ("STRING", {"default": ""}),
+                # --- Reference Person Slot 3 ---
+                "ref_image_3": ("IMAGE",),
+                "replaces_who_3": ("STRING", {"default": ""}),
+                # --- Reference Person Slot 4 ---
+                "ref_image_4": ("IMAGE",),
+                "replaces_who_4": ("STRING", {"default": ""}),
+                # --- Reference Person Slot 5 ---
+                "ref_image_5": ("IMAGE",),
+                "replaces_who_5": ("STRING", {"default": ""}),
+                # --- Swap Fine-Tuning Controls ---
+                "use_composition_clothing": ("BOOLEAN", {"default": True}),
+                "use_composition_body_type": ("BOOLEAN", {"default": False}),
+                "use_composition_pose": ("BOOLEAN", {"default": True}),
+                "use_composition_hairstyle": ("BOOLEAN", {"default": False}),
+                "transfer_facial_expression": ("BOOLEAN", {"default": True}),
+                "preserve_skin_tone": ("BOOLEAN", {"default": True}),
+                "preserve_age_appearance": ("BOOLEAN", {"default": True}),
+                "preserve_accessories": ("BOOLEAN", {"default": False}),
+                "preserve_scene_lighting": ("BOOLEAN", {"default": True}),
+                "preserve_background": ("BOOLEAN", {"default": True}),
+                "gender_match_mode": (["auto", "force_ref", "force_comp"], {"default": "auto"}),
+                "swap_detail_level": (["minimal", "balanced", "detailed"], {"default": "balanced"}),
+                # --- System Prompt Override ---
+                "system_prompt_override": ("STRING", {"multiline": True, "default": ""}),
+                "system_prompt_addition": ("STRING", {"default": ""}),
+            }
+        }
+        inputs["optional"].update(COMMON_CREATIVE_INPUTS)
+        return inputs
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("h3_prompt",)
+    FUNCTION = "generate"
+    CATEGORY = "LM Connect/MiniMax H3"
+
+    def _build_swap_config_brief(self, reference_descriptions, replaces_who_list, use_composition_clothing, use_composition_body_type,
+                                  use_composition_pose, use_composition_hairstyle, transfer_facial_expression,
+                                  preserve_skin_tone, preserve_age_appearance, preserve_accessories,
+                                  preserve_scene_lighting, preserve_background, gender_match_mode,
+                                  swap_detail_level):
+        lines = []
+        lines.append("=== SWAP SLOT ASSIGNMENTS ===")
+        lines.append(reference_descriptions)
+
+        has_replaces = any(r.strip() for r in replaces_who_list)
+        if has_replaces:
+            lines.append("\n=== EXPLICIT REPLACEMENT MAPPINGS ===")
+            for i, replaces in enumerate(replaces_who_list, 1):
+                if replaces.strip():
+                    lines.append(f"- Picture {i} replaces: {replaces.strip()}")
+
+        lines.append("\n=== SWAP CONFIGURATION RULES ===")
+        lines.append(f"- clothing_source: {'composition' if use_composition_clothing else 'reference'}")
+        lines.append(f"- body_type_source: {'composition' if use_composition_body_type else 'reference'}")
+        lines.append(f"- pose_source: {'composition' if use_composition_pose else 'natural'}")
+        lines.append(f"- hairstyle_source: {'composition' if use_composition_hairstyle else 'reference'}")
+        lines.append(f"- expression_source: {'composition' if transfer_facial_expression else 'natural'}")
+        lines.append(f"- preserve_ref_skin_tone: {str(preserve_skin_tone).lower()}")
+        lines.append(f"- preserve_ref_age: {str(preserve_age_appearance).lower()}")
+        lines.append(f"- preserve_ref_accessories: {str(preserve_accessories).lower()}")
+        lines.append(f"- preserve_scene_lighting: {str(preserve_scene_lighting).lower()}")
+        lines.append(f"- preserve_background: {str(preserve_background).lower()}")
+        lines.append(f"- gender_match_mode: {gender_match_mode}")
+        lines.append(f"- swap_detail_level: {swap_detail_level}")
+
+        return "\n".join(lines)
+
+    def generate(self, composition_image, user_brief: str, reference_descriptions: str,
+                 ref_image_1=None, replaces_who_1="",
+                 ref_image_2=None, replaces_who_2="",
+                 ref_image_3=None, replaces_who_3="",
+                 ref_image_4=None, replaces_who_4="",
+                 ref_image_5=None, replaces_who_5="",
+                 use_composition_clothing=True, use_composition_body_type=False,
+                 use_composition_pose=True, use_composition_hairstyle=False,
+                 transfer_facial_expression=True, preserve_skin_tone=True,
+                 preserve_age_appearance=True, preserve_accessories=False,
+                 preserve_scene_lighting=True, preserve_background=True,
+                 gender_match_mode="auto", swap_detail_level="balanced",
+                 system_prompt_override="", system_prompt_addition="",
+                 has_dialogue=False, dialogue_language="English", shot_structure="auto",
+                 num_shots=0, duration_seconds=6.0, visual_style="Auto (from brief)",
+                 has_music=False, music_description="", has_ambience=True,
+                 ambience_description="", camera_motion_hint="", on_screen_text="",
+                 negative_instructions="", extra_instructions="",
+                 guide_mode="compact", max_image_dimension=768, assume_context_size=8192,
+                 backend=None, base_url="http://localhost:1234/v1", model="", temperature=0.4, max_tokens=2500):
+
+        # Collect active swap slots
+        active_images = []
+        replaces_who_list = []
+        
+        ref_data = [
+            (ref_image_1, replaces_who_1),
+            (ref_image_2, replaces_who_2),
+            (ref_image_3, replaces_who_3),
+            (ref_image_4, replaces_who_4),
+            (ref_image_5, replaces_who_5),
+        ]
+        
+        for img, replaces in ref_data:
+            if img is not None:
+                active_images.append(img)
+                replaces_who_list.append(replaces)
+
+        if not active_images:
+            return ("[LM Connect Error] At least one reference person image must be connected.",)
+
+        # Load guide and system prompt
+        guide_text = load_guide("ref_guide", mode=guide_mode)
+        if not guide_text:
+            return ("[LM Connect Error] ref_guide.md not found in guides folder.",)
+
+        system_message = build_system_message(
+            guide_text,
+            system_prompt_override if system_prompt_override.strip() else DEFAULT_SWAP_BEHAVIOR,
+            system_prompt_addition
+        )
+
+        # Build settings brief
+        settings_brief = build_settings_brief(
+            has_dialogue, dialogue_language, shot_structure, num_shots, duration_seconds,
+            visual_style, has_music, music_description, has_ambience, ambience_description,
+            camera_motion_hint, on_screen_text, negative_instructions, extra_instructions
+        )
+
+        # Build swap configuration brief
+        swap_config = self._build_swap_config_brief(
+            reference_descriptions, replaces_who_list, use_composition_clothing, use_composition_body_type,
+            use_composition_pose, use_composition_hairstyle, transfer_facial_expression,
+            preserve_skin_tone, preserve_age_appearance, preserve_accessories,
+            preserve_scene_lighting, preserve_background, gender_match_mode, swap_detail_level
+        )
+
+        # Build user content
+        user_content = [
+            {"type": "text", "text": (
+                f"User brief:\n{user_brief}\n\n"
+                f"{swap_config}\n\n"
+                f"Creative settings:\n{settings_brief}"
+            )}
+        ]
+
+        # Add composition image
+        user_content.append({"type": "text", "text": "The following image is the COMPOSITION IMAGE (Picture COMP) — the scene layout, pose, and environment reference."})
+        user_content.append({"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(composition_image, max_dimension=max_image_dimension)}})
+
+        # Add reference person images
+        for i, img in enumerate(active_images):
+            user_content.append({"type": "text", "text": f"The following image is REFERENCE PERSON {i+1} (Picture {i+1}) — the identity source for swap slot {i+1}."})
+            user_content.append({"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(img, max_dimension=max_image_dimension)}})
+
+        messages = [{"role": "system", "content": system_message}, {"role": "user", "content": user_content}]
+
+        warning = _context_warning(estimate_tokens(messages), max_tokens, assume_context_size)
+
+        response = run_llm(messages, backend=backend, legacy_base_url=base_url, legacy_model=model, legacy_temperature=temperature, legacy_max_tokens=max_tokens)
+
+        return (warning + response,)
+
+
+DEFAULT_DIRECTOR_BEHAVIOR = SYSTEM_PROMPTS.get("h3_director_behavior", "")
+
+class LMConnectH3ImageToVideoPrompt:
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = {
+            "required": {
+                "general_prompt": ("STRING", {"multiline": True}),
+                "location": (["New Location", "Use Image 1 Location", "Use Image 2 Location", "Use Image 3 Location", "Use Image 4 Location", "Use Image 5 Location"], {"default": "New Location"}),
+                "new_location_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "nsfw": ("BOOLEAN", {"default": False}),
+                "analyze_each_image_first": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {
+                "image_1": ("IMAGE",),
+                "image_2": ("IMAGE",),
+                "image_3": ("IMAGE",),
+                "image_4": ("IMAGE",),
+                "image_5": ("IMAGE",),
+                "system_prompt_override": ("STRING", {"multiline": True, "default": ""}),
+                "system_prompt_addition": ("STRING", {"default": ""}),
+            }
+        }
+        inputs["optional"].update(COMMON_CREATIVE_INPUTS)
+        return inputs
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("h3_prompt",)
+    FUNCTION = "generate"
+    CATEGORY = "LM Connect/MiniMax H3"
+
+    def generate(self, general_prompt: str, location: str, new_location_prompt: str,
+                 nsfw: bool, analyze_each_image_first: bool,
+                 image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
+                 system_prompt_override="", system_prompt_addition="",
+                 has_dialogue=False, dialogue_language="English", shot_structure="auto",
+                 num_shots=0, duration_seconds=6.0, visual_style="Auto (from brief)",
+                 has_music=False, music_description="", has_ambience=True,
+                 ambience_description="", camera_motion_hint="", on_screen_text="",
+                 negative_instructions="", extra_instructions="",
+                 guide_mode="compact", max_image_dimension=768, assume_context_size=8192,
+                 backend=None, base_url="http://localhost:1234/v1", model="", temperature=0.4, max_tokens=2500):
+
+        # Collect active images
+        active_images = []
+        for i, img in enumerate([image_1, image_2, image_3, image_4, image_5]):
+            if img is not None:
+                active_images.append((i+1, img))
+
+        if not active_images:
+            return ("[LM Connect Error] At least one image must be connected.",)
+
+        # Load guide
+        guide_text = load_guide("ref_guide", mode=guide_mode)
+        if not guide_text:
+            return ("[LM Connect Error] ref_guide.md not found in guides folder.",)
+
+        # Pre-analyze images if requested
+        pre_analyzed_texts = []
+        if analyze_each_image_first:
+            for idx, img in active_images:
+                analysis_messages = [
+                    {"role": "system", "content": "You are a helpful assistant. Describe the person/character in the image in high detail (clothing, facial features, hair, accessories). Do not describe the background, only the character."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": f"Please describe the character in this image (Picture {idx})."},
+                        {"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(img, max_dimension=max_image_dimension)}}
+                    ]}
+                ]
+                desc = run_llm(analysis_messages, backend=backend, legacy_base_url=base_url, legacy_model=model, legacy_temperature=temperature, legacy_max_tokens=500)
+                pre_analyzed_texts.append(f"--- Picture {idx} Pre-Analyzed Character Description ---\n{desc}")
+
+        # Build final LLM messages
+        system_message = build_system_message(
+            guide_text,
+            system_prompt_override if system_prompt_override.strip() else DEFAULT_DIRECTOR_BEHAVIOR,
+            system_prompt_addition
+        )
+
+        settings_brief = build_settings_brief(
+            has_dialogue, dialogue_language, shot_structure, num_shots, duration_seconds,
+            visual_style, has_music, music_description, has_ambience, ambience_description,
+            camera_motion_hint, on_screen_text, negative_instructions, extra_instructions
+        )
+        
+        brief_parts = [f"General Prompt:\n{general_prompt}"]
+        if location == "New Location":
+            brief_parts.append(f"Location Rule: Use the following new location description:\n{new_location_prompt}")
+        else:
+            brief_parts.append(f"Location Rule: Match the environment and background from {location.replace('Use ', '')}.")
+            
+        brief_parts.append(f"NSFW Allowed: {'YES' if nsfw else 'NO'}")
+        
+        if pre_analyzed_texts:
+            brief_parts.append("\n".join(pre_analyzed_texts))
+
+        user_content = [
+            {"type": "text", "text": (
+                f"User Instructions & Context:\n"
+                f"{chr(10).join(brief_parts)}\n\n"
+                f"Creative settings:\n{settings_brief}"
+            )}
+        ]
+
+        # Add images
+        for idx, img in active_images:
+            user_content.append({"type": "text", "text": f"The following image is Picture {idx}."})
+            user_content.append({"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(img, max_dimension=max_image_dimension)}})
+
+        messages = [{"role": "system", "content": system_message}, {"role": "user", "content": user_content}]
+        warning = _context_warning(estimate_tokens(messages), max_tokens, assume_context_size)
+        response = run_llm(messages, backend=backend, legacy_base_url=base_url, legacy_model=model, legacy_temperature=temperature, legacy_max_tokens=max_tokens)
+
+        return (warning + response,)
+
+
 class LMConnectExtraSystemPrompt:
     @classmethod
     def INPUT_TYPES(cls):
