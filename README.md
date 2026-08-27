@@ -11,6 +11,11 @@ A comprehensive suite of custom nodes for ComfyUI designed to seamlessly connect
 - **Advanced API Handling**: Robust HTTP implementation with streaming support to prevent ComfyUI from freezing or timing out during long prompt generation sessions.
 - **Vision Model Support**: Dynamic image inputs (up to 5 images) and automatic contact sheet generation for video references to be used with Vision-Language Models.
 - **MiniMax H3 Prompt Generation**: Specialized nodes crafted to strictly follow the official MiniMax H3 Prompt Writing Guides (T2VA, I2VA, FL2VA, L2VA) to create highly detailed, structured video prompts.
+- **Advanced MiniMax H3 Workflows**: Brand new specialized nodes for complex video generation:
+  - **Person Swap**: Transfer identities from up to 5 reference images into a composition image with granular control over clothing, pose, hairstyle, and expression inheritance.
+  - **Director Mode (Image to Video)**: Seamlessly transplant characters from reference images into entirely new locations or match them with a specific environment.
+  - **Orbit Shot (Photogrammetry)**: Create precise 360-degree camera orbits around characters or objects with highly customizable poses, framing, and studio backgrounds.
+  - **Pre-Analysis Engine**: Optional ability to have the LLM thoroughly analyze and describe each reference image *before* generating the final prompt, drastically improving character consistency.
 - **Compact Guide Mode**: Reduces system prompt token usage by ~75% while preserving all formatting rules for H3 prompts.
 - **Thinking Model Support**: Automatically disables "thinking/reasoning" mode on models (like Qwen3) to prevent empty outputs when using limited context/token sizes, and provides helpful warnings if a model stalls in reasoning.
 
@@ -92,4 +97,7 @@ When using the advanced H3 prompt nodes with vision models, the combined length 
 ### 🎬 MiniMax H3 Generation (`LM Connect/MiniMax H3`)
 - **LM Connect: H3 Prompt (T2VA/I2VA/FL2VA/L2VA)** - Specialized structured prompt generation for MiniMax models.
 - **LM Connect: H3 Prompt (Full Reference)** - Similar to the above, but supports full image/video references (via automatic contact sheets) and audio descriptors.
+- **LM Connect: H3 Person Swap** - Advanced prompt generation for replacing characters in a composition image with granular attribute inheritance.
+- **LM Connect: H3 Image to Video Prompt** - Director-style prompting to place reference characters into new environments and locations.
+- **LM Connect: H3 Orbit Shot (Photogrammetry)** - Generates prompts for 360-degree orbit camera movements around subjects with customizable poses and backgrounds.
 - **LM Connect: Extra System Prompt** - Allows injecting additional custom rules into the H3 system prompt.

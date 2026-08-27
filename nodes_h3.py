@@ -257,6 +257,8 @@ class LMConnectH3PersonSwap:
                 "preserve_background": ("BOOLEAN", {"default": True}),
                 "gender_match_mode": (["auto", "force_ref", "force_comp"], {"default": "auto"}),
                 "swap_detail_level": (["minimal", "balanced", "detailed"], {"default": "balanced"}),
+                "nsfw": ("BOOLEAN", {"default": False}),
+                "analyze_each_image_first": ("BOOLEAN", {"default": False}),
                 # --- System Prompt Override ---
                 "system_prompt_override": ("STRING", {"multiline": True, "default": ""}),
                 "system_prompt_addition": ("STRING", {"default": ""}),
@@ -314,6 +316,7 @@ class LMConnectH3PersonSwap:
                  preserve_age_appearance=True, preserve_accessories=False,
                  preserve_scene_lighting=True, preserve_background=True,
                  gender_match_mode="auto", swap_detail_level="balanced",
+                 nsfw=False, analyze_each_image_first=False,
                  system_prompt_override="", system_prompt_addition="",
                  has_dialogue=False, dialogue_language="English", shot_structure="auto",
                  num_shots=0, duration_seconds=6.0, visual_style="Auto (from brief)",
@@ -369,11 +372,40 @@ class LMConnectH3PersonSwap:
             preserve_scene_lighting, preserve_background, gender_match_mode, swap_detail_level
         )
 
+        # Pre-analyze images if requested
+        pre_analyzed_texts = []
+        if analyze_each_image_first:
+            comp_msg = [
+                {"role": "system", "content": "You are a helpful assistant. Describe the people and the environment in this image in high detail."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Please describe the characters and the scene in this composition image (Picture COMP)."},
+                    {"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(composition_image, max_dimension=max_image_dimension)}}
+                ]}
+            ]
+            comp_desc = run_llm(comp_msg, backend=backend, legacy_base_url=base_url, legacy_model=model, legacy_temperature=temperature, legacy_max_tokens=500)
+            pre_analyzed_texts.append(f"--- Picture COMP (Composition Image) Pre-Analyzed Description ---\n{comp_desc}")
+
+            for idx, img in enumerate(active_images, 1):
+                ref_msg = [
+                    {"role": "system", "content": "You are a helpful assistant. Describe the person/character in the image in high detail (clothing, facial features, hair, accessories). Do not describe the background, only the character."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": f"Please describe the character in this reference image (Picture {idx})."},
+                        {"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(img, max_dimension=max_image_dimension)}}
+                    ]}
+                ]
+                ref_desc = run_llm(ref_msg, backend=backend, legacy_base_url=base_url, legacy_model=model, legacy_temperature=temperature, legacy_max_tokens=500)
+                pre_analyzed_texts.append(f"--- Picture {idx} (Reference {idx}) Pre-Analyzed Character Description ---\n{ref_desc}")
+
+        extra_rules = [f"NSFW Allowed: {'YES' if nsfw else 'NO'}"]
+        if pre_analyzed_texts:
+            extra_rules.append("\n".join(pre_analyzed_texts))
+
         # Build user content
         user_content = [
             {"type": "text", "text": (
                 f"User brief:\n{user_brief}\n\n"
                 f"{swap_config}\n\n"
+                f"{chr(10).join(extra_rules)}\n\n"
                 f"Creative settings:\n{settings_brief}"
             )}
         ]
@@ -502,6 +534,265 @@ class LMConnectH3ImageToVideoPrompt:
         # Add images
         for idx, img in active_images:
             user_content.append({"type": "text", "text": f"The following image is Picture {idx}."})
+            user_content.append({"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(img, max_dimension=max_image_dimension)}})
+
+        messages = [{"role": "system", "content": system_message}, {"role": "user", "content": user_content}]
+        warning = _context_warning(estimate_tokens(messages), max_tokens, assume_context_size)
+        response = run_llm(messages, backend=backend, legacy_base_url=base_url, legacy_model=model, legacy_temperature=temperature, legacy_max_tokens=max_tokens)
+
+        return (warning + response,)
+
+
+DEFAULT_ORBIT_BEHAVIOR = SYSTEM_PROMPTS.get("h3_orbit_behavior", "")
+
+IMAGE_ROLES = ["Character Reference", "Object Reference", "Background / Location Reference"]
+
+BACKGROUND_PRESETS = [
+    "Pure White (Studio)",
+    "Studio Gray (Neutral)",
+    "Black Void",
+    "Outdoor / Natural Light",
+    "Custom",
+]
+
+FRAMING_OPTIONS = [
+    "Full Body (head to toe)",
+    "3/4 Body (head to knees)",
+    "Waist Up (medium shot)",
+    "Chest Up (bust shot)",
+    "Head & Shoulders (close-up)",
+    "Face Only (extreme close-up)",
+]
+
+POSE_PRESETS = [
+    "Custom (describe below)",
+    # --- Classic 3D / Photogrammetry ---
+    "T-Pose (arms straight out horizontally)",
+    "A-Pose (arms slightly lowered at 45 degrees)",
+    # --- Standing ---
+    "Standing straight, arms at sides",
+    "Standing with arms crossed",
+    "Standing with hands on hips",
+    "Standing contrapposto (weight on one leg)",
+    "Standing with legs apart, power stance",
+    "Standing with hands in pockets",
+    "Standing with one hand raised (waving)",
+    "Standing back-to-back (multiple characters)",
+    # --- Sitting ---
+    "Sitting on a chair, hands on knees",
+    "Sitting cross-legged on the floor",
+    "Sitting on the ground, legs extended",
+    "Sitting with one leg crossed over the other",
+    "Sitting on the edge of a surface, legs dangling",
+    # --- Kneeling / Crouching ---
+    "Kneeling on one knee",
+    "Kneeling on both knees, upright",
+    "Crouching / Squatting",
+    # --- Action Freeze ---
+    "Walking mid-stride (frozen)",
+    "Running mid-stride (frozen)",
+    "Jumping (frozen mid-air)",
+    "Fighting stance (guard up)",
+    "Martial arts kick (frozen mid-kick)",
+    "Punching forward (frozen mid-swing)",
+    "Dancing (frozen mid-move)",
+    "Throwing (frozen mid-throw)",
+    # --- Fashion / Modeling ---
+    "Fashion pose (hand on hip, slight body turn)",
+    "Profile view (body turned 90 degrees to the side)",
+    "Back turned (facing away from camera start)",
+    "Looking over shoulder",
+    "Arms raised above head",
+    "Leaning against a wall or surface",
+    "Model walk (frozen mid-catwalk stride)",
+    # --- Reclining / Lying ---
+    "Lying down on back (supine)",
+    "Lying on side (recumbent)",
+    "Lying face down (prone)",
+]
+
+class LMConnectH3OrbitShot:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "framing": (FRAMING_OPTIONS, {"default": "Full Body (head to toe)"}),
+                "pose_preset": (POSE_PRESETS, {"default": "Standing straight, arms at sides"}),
+                "custom_pose_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "background_preset": (BACKGROUND_PRESETS, {"default": "Pure White (Studio)"}),
+                "custom_background_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "orbit_direction": (["clockwise", "counter-clockwise"], {"default": "clockwise"}),
+                "camera_height": (["eye-level", "slightly above", "slightly below", "top-down"], {"default": "eye-level"}),
+                "duration_seconds": ("FLOAT", {"default": 6.0, "min": 5.0, "max": 15.0, "step": 0.5}),
+                "nsfw": ("BOOLEAN", {"default": False}),
+                "analyze_each_image_first": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {
+                # --- Image Slots with Role Assignment ---
+                "image_1": ("IMAGE",),
+                "image_role_1": (IMAGE_ROLES, {"default": "Character Reference"}),
+                "image_2": ("IMAGE",),
+                "image_role_2": (IMAGE_ROLES, {"default": "Character Reference"}),
+                "image_3": ("IMAGE",),
+                "image_role_3": (IMAGE_ROLES, {"default": "Character Reference"}),
+                "image_4": ("IMAGE",),
+                "image_role_4": (IMAGE_ROLES, {"default": "Character Reference"}),
+                "image_5": ("IMAGE",),
+                "image_role_5": (IMAGE_ROLES, {"default": "Character Reference"}),
+                # --- Visual & Creative ---
+                "visual_style": (["Auto (from brief)", "Cinematic", "Live-action", "2D-animated", "3D CG", "Claymation", "Watercolor", "Vintage film"], {"default": "Live-action"}),
+                "negative_instructions": ("STRING", {"multiline": True, "default": ""}),
+                "extra_instructions": ("STRING", {"multiline": True, "default": ""}),
+                # --- System Prompt Override ---
+                "system_prompt_override": ("STRING", {"multiline": True, "default": ""}),
+                "system_prompt_addition": ("STRING", {"default": ""}),
+                # --- LLM Connection ---
+                "guide_mode": (["compact", "full"], {"default": "compact"}),
+                "max_image_dimension": ("INT", {"default": 768, "min": 256, "max": 2048}),
+                "assume_context_size": ("INT", {"default": 8192, "min": 1024, "max": 131072}),
+                "backend": ("LMC_BACKEND",),
+                "base_url": ("STRING", {"default": "http://localhost:1234/v1"}),
+                "model": ("STRING", {"default": ""}),
+                "temperature": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "max_tokens": ("INT", {"default": 2500, "min": 1, "max": 16384}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("h3_prompt",)
+    FUNCTION = "generate"
+    CATEGORY = "LM Connect/MiniMax H3"
+
+    def generate(self, framing: str, pose_preset: str, custom_pose_prompt: str,
+                 background_preset: str, custom_background_prompt: str,
+                 orbit_direction: str, camera_height: str, duration_seconds: float,
+                 nsfw: bool, analyze_each_image_first: bool,
+                 image_1=None, image_role_1="Character Reference",
+                 image_2=None, image_role_2="Character Reference",
+                 image_3=None, image_role_3="Character Reference",
+                 image_4=None, image_role_4="Character Reference",
+                 image_5=None, image_role_5="Character Reference",
+                 visual_style="Live-action",
+                 negative_instructions="", extra_instructions="",
+                 system_prompt_override="", system_prompt_addition="",
+                 guide_mode="compact", max_image_dimension=768, assume_context_size=8192,
+                 backend=None, base_url="http://localhost:1234/v1", model="", temperature=0.4, max_tokens=2500):
+
+        # Collect active images with their roles
+        all_slots = [
+            (image_1, image_role_1),
+            (image_2, image_role_2),
+            (image_3, image_role_3),
+            (image_4, image_role_4),
+            (image_5, image_role_5),
+        ]
+        active_images = []  # list of (slot_index, image_tensor, role)
+        for i, (img, role) in enumerate(all_slots):
+            if img is not None:
+                active_images.append((i + 1, img, role))
+
+        if not active_images:
+            return ("[LM Connect Error] At least one image must be connected.",)
+
+        # Load guide
+        guide_text = load_guide("ref_guide", mode=guide_mode)
+        if not guide_text:
+            return ("[LM Connect Error] ref_guide.md not found in guides folder.",)
+
+        # Pre-analyze images if requested
+        pre_analyzed_texts = []
+        if analyze_each_image_first:
+            for idx, img, role in active_images:
+                if role == "Character Reference":
+                    sys_msg = "You are a helpful assistant. Describe the person/character in the image in high detail: face shape, skin tone, hair color/style/length, eye color, build/physique, clothing (every garment, color, texture), accessories (glasses, jewelry, watch, hat), footwear, and any distinguishing features (tattoos, scars, birthmarks). Do NOT describe the background."
+                    usr_msg = f"Please describe the character in this image (Picture {idx}) in exhaustive detail."
+                elif role == "Object Reference":
+                    sys_msg = "You are a helpful assistant. Describe the object in the image in high detail: shape, dimensions, material, color, texture, surface finish, notable features, and any text/labels visible on it. Do NOT describe the background."
+                    usr_msg = f"Please describe the object in this image (Picture {idx}) in exhaustive detail."
+                else:  # Background / Location Reference
+                    sys_msg = "You are a helpful assistant. Describe the environment/location in the image in high detail: setting type, lighting conditions, floor/ground material, walls/sky, colors, atmosphere, and any notable environmental features."
+                    usr_msg = f"Please describe the environment/location in this image (Picture {idx}) in detail."
+
+                analysis_messages = [
+                    {"role": "system", "content": sys_msg},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": usr_msg},
+                        {"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(img, max_dimension=max_image_dimension)}}
+                    ]}
+                ]
+                desc = run_llm(analysis_messages, backend=backend, legacy_base_url=base_url, legacy_model=model, legacy_temperature=temperature, legacy_max_tokens=500)
+                pre_analyzed_texts.append(f"--- Picture {idx} ({role}) Pre-Analyzed Description ---\n{desc}")
+
+        # Build system message
+        system_message = build_system_message(
+            guide_text,
+            system_prompt_override if system_prompt_override.strip() else DEFAULT_ORBIT_BEHAVIOR,
+            system_prompt_addition
+        )
+
+        # Build hardcoded settings brief (no dialogue, no music, no ambience, single shot)
+        settings_lines = [
+            f"- Target duration: {duration_seconds:.1f} seconds.",
+            "- Shot structure: single continuous shot.",
+            "- Dialogue: no.",
+            "- Music: no.",
+            "- Ambience: no.",
+        ]
+        if visual_style != "Auto (from brief)":
+            settings_lines.append(f"- Visual style: {visual_style}.")
+        settings_lines.append(f"- Camera motion hint: Smooth {orbit_direction} 360-degree orbit at {camera_height} height, steady mechanical pace, always facing center of subject(s).")
+        if negative_instructions.strip():
+            settings_lines.append(f"- Avoid: {negative_instructions.strip()}")
+        if extra_instructions.strip():
+            settings_lines.append(f"- Extra notes: {extra_instructions.strip()}")
+        settings_brief = "\n".join(settings_lines)
+
+        # Build image role summary
+        role_lines = ["=== IMAGE ROLE ASSIGNMENTS ==="]
+        for idx, img, role in active_images:
+            role_lines.append(f"- Picture {idx}: {role}")
+
+        # Build background info
+        bg_lines = ["=== BACKGROUND SETTING ==="]
+        if background_preset == "Custom":
+            bg_lines.append(f"Background: Custom — {custom_background_prompt}")
+        else:
+            bg_lines.append(f"Background: {background_preset}")
+
+        # Build pose info
+        pose_lines = ["=== POSE ==="]
+        if pose_preset == "Custom (describe below)":
+            pose_lines.append(f"Pose: Custom — {custom_pose_prompt}")
+        else:
+            pose_lines.append(f"Pose Preset: {pose_preset}")
+            if custom_pose_prompt.strip():
+                pose_lines.append(f"Additional Pose Notes: {custom_pose_prompt.strip()}")
+
+        # Build full user content text
+        brief_parts = [
+            f"Framing: {framing}",
+            "\n".join(pose_lines),
+            "\n".join(role_lines),
+            "\n".join(bg_lines),
+            f"Orbit Direction: {orbit_direction}",
+            f"Camera Height: {camera_height}",
+            f"NSFW Allowed: {'YES' if nsfw else 'NO'}",
+        ]
+
+        if pre_analyzed_texts:
+            brief_parts.append("\n".join(pre_analyzed_texts))
+
+        user_content = [
+            {"type": "text", "text": (
+                f"User Instructions & Context:\n"
+                f"{chr(10).join(brief_parts)}\n\n"
+                f"Creative settings:\n{settings_brief}"
+            )}
+        ]
+
+        # Add images with role labels
+        for idx, img, role in active_images:
+            user_content.append({"type": "text", "text": f"The following image is Picture {idx} (Role: {role})."})
             user_content.append({"type": "image_url", "image_url": {"url": image_tensor_to_base64_url(img, max_dimension=max_image_dimension)}})
 
         messages = [{"role": "system", "content": system_message}, {"role": "user", "content": user_content}]
